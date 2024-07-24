@@ -98,7 +98,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		affinity := FillAffinity(deploy.Spec.Template.Spec)
+		affinity = FillAffinity(deploy.Spec.Template.Spec)
 
 		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms =
 			append(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
@@ -134,7 +134,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		affinity := FillAffinity(sts.Spec.Template.Spec)
+		affinity = FillAffinity(sts.Spec.Template.Spec)
 
 		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms =
 			append(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
@@ -162,13 +162,15 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// create the patch
-	patch, err := json.Marshal([]JSONPatchEntry{
+	patch := []JSONPatchEntry{
 		{
 			OP:    "replace",
 			Path:  "/spec/template/spec/affinity",
 			Value: affinityBytes,
 		},
-	})
+	}
+
+	patchBytes, err := json.Marshal(&patch)
 	if err != nil {
 		app.HandleError(w, r, fmt.Errorf("marshal patch: %v", err))
 		return
@@ -180,7 +182,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 	admissionResponse := &admissionv1.AdmissionResponse{
 		UID:       admissionReview.Request.UID,
 		Allowed:   true,
-		Patch:     patch,
+		Patch:     patchBytes,
 		PatchType: &patchType,
 	}
 
