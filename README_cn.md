@@ -1,5 +1,13 @@
 # mix-scheduler-admission-webhook
 
+## 设计思路
+
+- spot实例比较适合灵活性较高或具有容错性的应用程序
+- 为了保证服务的高可用性就需要在on-demand节点(非spot节点)上保持一定量应用pod, 并且在spot节点上的pod尽量分散节点部署, 避免单点spot节点下线导致的短时压力飙升, 过于加大其他pod的压力, 降低服务的可用性
+- 尽量保证应用的大部分pod会分散部署在不同的spot节点上
+- 支持自定义选择命名空间, 应用是否接受调整调度, 默认情况下, kube-system, mix-scheduler-system 不开启,其他命名空间都开启, 可设置 mix-scheduler-admission-webhook: "false" 关闭调度, 实例上的调度开关优于命名空间的调度开关, 命名空间的调度开关优于mix-scheduler-admission-webhook的调度开关
+- on-demand和spot的选择权重可调节, 可通过webhook启动配置和命名空间label配置 ( spot/weight: n, on-demand/weight: n ) ,实例上的权重配置优先于命名空间的权重配置, 命名空间的权重配置优于mix-scheduler-admission-webhook的权重配置
+
 ## 先决条件
 
 测试此示例的集群必须运行 Kubernetes 1.16.0 或更高版本

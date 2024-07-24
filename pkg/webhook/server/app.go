@@ -1,14 +1,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -17,10 +21,16 @@ const (
 	ondemand    = "on-demand"
 	spot        = "spot"
 
+	spotWeithtKey     = "spot/weight"
+	ondemandWeithtKey = "on-demand/weight"
+
 	mixSchedulerKey = "mix-scheduler-admission-webhook"
 )
 
 type App struct {
+	Client kubernetes.Interface
+	Ctx    context.Context
+
 	mixSchedulerRequierd   bool
 	notControllerNamespace map[string]struct{}
 
@@ -28,9 +38,21 @@ type App struct {
 	OndemandNodeAffinityPreferred corev1.PreferredSchedulingTerm
 }
 
-func NewDefaultApp() *App {
+func NewDefaultApp(ctx context.Context) (*App, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	return &App{
-		mixSchedulerRequierd:   false,
+		Client:                 client,
+		Ctx:                    ctx,
+		mixSchedulerRequierd:   true,
 		notControllerNamespace: map[string]struct{}{},
 
 		// spot node affinity
@@ -60,7 +82,7 @@ func NewDefaultApp() *App {
 				},
 			},
 		},
-	}
+	}, nil
 }
 
 // isControllerNamespace is controller namespace
@@ -71,7 +93,19 @@ func (app *App) isControllerNamespace(namespace string) bool {
 
 // instanceIsSkip skip instance
 func (app *App) instanceIsSkip(namespace string, labels map[string]string) bool {
-	return !app.isControllerNamespace(namespace) || (app.mixSchedulerRequierd && labels[mixSchedulerKey] != "true")
+	if !app.isControllerNamespace(namespace) {
+		return true
+	}
+
+	if val, ok := labels[mixSchedulerKey]; ok && val != "" && val != "true" {
+		return true
+	}
+
+	if !app.mixSchedulerRequierd {
+		return true
+	}
+
+	return false
 }
 
 func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
@@ -85,8 +119,12 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		affinity *corev1.Affinity
-		selector *metav1.LabelSelector
+		affinity        *corev1.Affinity
+		selector        *metav1.LabelSelector
+		instanceLabels  map[string]string
+		namespaceLabels map[string]string
+		spotWeitht      = app.SpotNodeAffinityPreferred.Weight
+		ondemandWeitht  = app.OndemandNodeAffinityPreferred.Weight
 	)
 
 	switch admissionReview.Request.Kind.Kind {
@@ -99,10 +137,25 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if app.instanceIsSkip(deploy.Namespace, deploy.Labels) {
-			jsonOk(w, r)
+			klog.Info("instance is skip")
+			writeNil(w, admissionReview)
 			return
 		}
 
+		ns, err := app.Client.CoreV1().Namespaces().Get(app.Ctx, deploy.Namespace, metav1.GetOptions{})
+		if err != nil {
+			app.HandleError(w, r, fmt.Errorf("get namespace: %v", err))
+			return
+		}
+
+		if val, ok := ns.Labels[mixSchedulerKey]; ok && val != "" && val != "true" {
+			klog.Info("instance is skip")
+			writeNil(w, admissionReview)
+			return
+		}
+
+		namespaceLabels = ns.Labels
+		instanceLabels = deploy.Labels
 		selector = deploy.Spec.Selector
 		affinity = FillAffinity(deploy.Spec.Template.Spec)
 	case "StatefulSet":
@@ -114,16 +167,96 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if app.instanceIsSkip(sts.Namespace, sts.Labels) {
-			jsonOk(w, r)
+			klog.Info("instance is skip")
+			writeNil(w, admissionReview)
 			return
 		}
 
+		ns, err := app.Client.CoreV1().Namespaces().Get(app.Ctx, sts.Namespace, metav1.GetOptions{})
+		if err != nil {
+			app.HandleError(w, r, fmt.Errorf("get namespace: %v", err))
+			return
+		}
+
+		if val, ok := ns.Labels[mixSchedulerKey]; ok && val != "" && val != "true" {
+			klog.Info("instance is skip")
+			writeNil(w, admissionReview)
+			return
+		}
+
+		namespaceLabels = ns.Labels
+		instanceLabels = sts.Labels
 		selector = sts.Spec.Selector
 		affinity = FillAffinity(sts.Spec.Template.Spec)
 	default:
 		klog.Errorf("unknown kind: %s", admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind)
-		jsonOk(w, r)
+		writeNil(w, admissionReview)
 		return
+	}
+
+	instanceIsSet := false
+	if val, ok := instanceLabels[spotWeithtKey]; ok {
+		sw, err := strconv.Atoi(val)
+		if err != nil {
+			app.HandleError(w, r, fmt.Errorf("parse spot weight: %v", err))
+			return
+		}
+
+		if sw < 0 { // spot weight must >= 0
+			app.HandleError(w, r, fmt.Errorf("spot weight must >= 0"))
+			return
+		}
+
+		instanceIsSet = true
+		spotWeitht = int32(sw)
+	}
+
+	if val, ok := instanceLabels[ondemandWeithtKey]; ok {
+		ow, err := strconv.Atoi(val)
+		if err != nil {
+			app.HandleError(w, r, fmt.Errorf("parse on-demand weight: %v", err))
+			return
+		}
+
+		if ow < 0 { // on-demand weight must >= 0
+			app.HandleError(w, r, fmt.Errorf("on-demand weight must >= 0"))
+			return
+		}
+
+		instanceIsSet = true
+		ondemandWeitht = int32(ow)
+	}
+
+	if !instanceIsSet {
+		if val, ok := namespaceLabels[spotWeithtKey]; ok {
+			sw, err := strconv.Atoi(val)
+			if err != nil {
+				app.HandleError(w, r, fmt.Errorf("parse spot weight: %v", err))
+				return
+			}
+
+			if sw < 0 { // spot weight must >= 0
+				app.HandleError(w, r, fmt.Errorf("spot weight must >= 0"))
+				return
+			}
+
+			spotWeitht = int32(sw)
+		}
+
+		if val, ok := namespaceLabels[ondemandWeithtKey]; ok {
+			ow, err := strconv.Atoi(val)
+			if err != nil {
+				app.HandleError(w, r, fmt.Errorf("parse on-demand weight: %v", err))
+				return
+			}
+
+			if ow < 0 { // on-demand weight must >= 0
+				app.HandleError(w, r, fmt.Errorf("on-demand weight must >= 0"))
+				return
+			}
+
+			ondemandWeitht = int32(ow)
+		}
 	}
 
 	// pod anti-affinity
@@ -135,9 +268,14 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	spotNodeAffinityPreferred := app.SpotNodeAffinityPreferred
+	spotNodeAffinityPreferred.Weight = spotWeitht
+	ondemandNodeAffinityPreferred := app.OndemandNodeAffinityPreferred
+	ondemandNodeAffinityPreferred.Weight = ondemandWeitht
+
 	affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
 		append(affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-			[]corev1.PreferredSchedulingTerm{app.SpotNodeAffinityPreferred, app.OndemandNodeAffinityPreferred}...)
+			[]corev1.PreferredSchedulingTerm{spotNodeAffinityPreferred, ondemandNodeAffinityPreferred}...)
 
 	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
 		append(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution,

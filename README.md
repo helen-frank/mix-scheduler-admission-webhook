@@ -1,5 +1,13 @@
 # mix-scheduler-admission-webhook
 
+## Design Ideas
+
+- Spot Instances are ideal for flexible or fault-tolerant applications
+- To ensure the high availability of the service, it is necessary to keep a certain amount of application pods on the on-demand node (non-spot node), and the pods on the spot node should be deployed as scattered as possible to avoid the short-term pressure surge caused by the offline of the single-point spot node, which excessively increases the pressure on other pods and reduces the availability of the service.
+- Try to ensure that most pods of the application are deployed on different spot nodes
+- Support custom selection of namespaces, whether the application accepts adjusted scheduling, by default, kube-system, mix-scheduler-system is not turned on, other namespaces are turned on, you can set the mix-scheduler-admission-webhook: false to turn off scheduling, the scheduling switch on the instance is better than the scheduling switch of the namespace, and the scheduling switch of the namespace is better than the scheduling switch of the mix-scheduler-admission-webhook.
+- On-demand and spot selection weights are adjustable. You can webhook the startup configuration and namespace label configuration (spot/weight: n, on-demand/weight: n). The weight configuration on the instance takes precedence over the weight configuration of the namespace, and the weight configuration of the namespace is better than the weight configuration of the mix-scheduler-admission-webhook.
+
 ## Prerequisites
 
 The cluster to test this example must be running Kubernetes 1.16.0 or later

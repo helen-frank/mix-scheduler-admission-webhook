@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	admissionv1 "k8s.io/api/admission/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // http helpers
@@ -59,4 +62,22 @@ func jsonError(w http.ResponseWriter, errStr string, code int) {
 // jsonErr err
 type jsonErr struct {
 	Err string `json:"err"`
+}
+
+func writeNil(w http.ResponseWriter, admissionReview *admissionv1.AdmissionReview) {
+	// create the AdmissionResponse
+	admissionResponse := &admissionv1.AdmissionResponse{
+		UID:     admissionReview.Request.UID,
+		Allowed: true,
+	}
+
+	respAdmissionReview := &admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "AdmissionReview",
+			APIVersion: "admission.k8s.io/v1",
+		},
+		Response: admissionResponse,
+	}
+
+	writeJSON(w, respAdmissionReview)
 }

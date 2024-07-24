@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -25,12 +26,14 @@ func StartServer() error {
 		port = "8443"
 	}
 
-	var mixSchedulerRequierd bool
+	// Enabled mix-scheduler
+	var mixSchedulerRequierd = true
 
 	if val := os.Getenv("mixSchedulerRequierd"); val != "" {
 		mixSchedulerRequierd = val == "true"
 	}
 
+	// notControllerNamespace
 	var notControllerNamespace map[string]struct{}
 	if val := os.Getenv("notControllerNamespace"); val != "" {
 
@@ -46,7 +49,11 @@ func StartServer() error {
 		}
 	}
 
-	app := NewDefaultApp()
+	app, err := NewDefaultApp(context.Background())
+	if err != nil {
+		return err
+	}
+
 	app.mixSchedulerRequierd = mixSchedulerRequierd
 	app.notControllerNamespace = notControllerNamespace
 

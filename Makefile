@@ -7,6 +7,7 @@ GOROOT ?= $(shell go env GOROOT)
 GIT_COMMIT=$(shell git rev-parse HEAD)
 GIT_TREE_STATE=$(shell if git status|grep -q 'clean';then echo clean; else echo dirty; fi)
 GOVERSION=${shell go version}
+KIND_CLUSTER ?= k1
 LDFLAGS="-s -w"
 
 depUpdate:
@@ -20,6 +21,15 @@ build:
 	@GOOS=${GOOS} GOARCH=${GOARCH} go build -ldflags ${LDFLAGS} -o _output/${GOOS}_${GOARCH}/${BIN_FILE} ./
 
 dockerBuild:
+	@docker build -t helenfrank/mix-scheduler-admission-webhook:${VERSION} .
+	@docker tag helenfrank/mix-scheduler-admission-webhook:${VERSION} helenfrank/mix-scheduler-admission-webhook:latest
+
+dockerBuildKindLoad:
+	@docker build -t helenfrank/mix-scheduler-admission-webhook:${VERSION} .
+	@docker tag helenfrank/mix-scheduler-admission-webhook:${VERSION} helenfrank/mix-scheduler-admission-webhook:latest
+	@kind load docker-image -n ${KIND_CLUSTER} helenfrank/mix-scheduler-admission-webhook:${VERSION}
+
+dockerBuildPush:
 	@docker build -t helenfrank/mix-scheduler-admission-webhook:${VERSION} .
 	@docker tag helenfrank/mix-scheduler-admission-webhook:${VERSION} helenfrank/mix-scheduler-admission-webhook:latest
 	@docker push helenfrank/mix-scheduler-admission-webhook:${VERSION}
