@@ -122,3 +122,8 @@ kubectl apply -f examples/tenreplicas-test-mix-scheduler.yaml
 ```bash
 kubectl apply -f examples/tenreplicas-sts-mix-scheduler.yaml
 ```
+
+## uninstall
+```bash
+./delete.sh
+```
