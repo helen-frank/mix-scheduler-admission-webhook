@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +14,9 @@ const (
 	tlsCertFile = `tls.crt`
 	tlsKeyFile  = `tls.key`
 )
+
+// env
+// PORT, mixSchedulerRequierd, notControllerNamespace, SPOT_NODE_WEIGHT, ONDEMAND_NODE_WEIGHT
 
 // StartServer starts the server
 func StartServer() error {
@@ -42,9 +46,24 @@ func StartServer() error {
 		}
 	}
 
-	app := &App{
-		mixSchedulerRequierd:   mixSchedulerRequierd,
-		notControllerNamespace: notControllerNamespace,
+	app := NewDefaultApp()
+	app.mixSchedulerRequierd = mixSchedulerRequierd
+	app.notControllerNamespace = notControllerNamespace
+
+	if val := os.Getenv("SPOT_NODE_WEIGHT"); val != "" {
+		num, err := strconv.Atoi(val)
+		if err != nil {
+			return err
+		}
+		app.SpotNodeAffinityPreferred.Weight = int32(num)
+	}
+
+	if val := os.Getenv("ONDEMAND_NODE_WEIGHT"); val != "" {
+		num, err := strconv.Atoi(val)
+		if err != nil {
+			return err
+		}
+		app.OndemandNodeAffinityPreferred.Weight = int32(num)
 	}
 
 	mux := BuildRouter(app)

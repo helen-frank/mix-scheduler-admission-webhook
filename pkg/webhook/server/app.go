@@ -20,36 +20,47 @@ const (
 	mixSchedulerKey = "mix-scheduler-admission-webhook"
 )
 
-var (
-	// ondemand node affinity
-	nodeAffinityRequiredNodeSelectorTerms = corev1.NodeSelectorTerm{
-		MatchExpressions: []corev1.NodeSelectorRequirement{
-			{
-				Key:      capacityKey,
-				Operator: corev1.NodeSelectorOpIn,
-				Values:   []string{ondemand},
+type App struct {
+	mixSchedulerRequierd   bool
+	notControllerNamespace map[string]struct{}
+
+	SpotNodeAffinityPreferred     corev1.PreferredSchedulingTerm
+	OndemandNodeAffinityPreferred corev1.PreferredSchedulingTerm
+}
+
+func NewDefaultApp() *App {
+	return &App{
+		mixSchedulerRequierd:   false,
+		notControllerNamespace: map[string]struct{}{},
+
+		// spot node affinity
+		SpotNodeAffinityPreferred: corev1.PreferredSchedulingTerm{
+			Weight: 10,
+			Preference: corev1.NodeSelectorTerm{
+				MatchExpressions: []corev1.NodeSelectorRequirement{
+					{
+						Key:      capacityKey,
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{spot},
+					},
+				},
 			},
 		},
-	}
 
-	// spot node affinity
-	nodeAffinityPreferred = corev1.PreferredSchedulingTerm{
-		Weight: 1,
-		Preference: corev1.NodeSelectorTerm{
-			MatchExpressions: []corev1.NodeSelectorRequirement{
-				{
-					Key:      capacityKey,
-					Operator: corev1.NodeSelectorOpIn,
-					Values:   []string{spot},
+		// on-demand node affinity
+		OndemandNodeAffinityPreferred: corev1.PreferredSchedulingTerm{
+			Weight: 1,
+			Preference: corev1.NodeSelectorTerm{
+				MatchExpressions: []corev1.NodeSelectorRequirement{
+					{
+						Key:      capacityKey,
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{ondemand},
+					},
 				},
 			},
 		},
 	}
-)
-
-type App struct {
-	mixSchedulerRequierd   bool
-	notControllerNamespace map[string]struct{}
 }
 
 // isControllerNamespace is controller namespace
@@ -73,7 +84,10 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var affinity *corev1.Affinity
+	var (
+		affinity *corev1.Affinity
+		selector *metav1.LabelSelector
+	)
 
 	switch admissionReview.Request.Kind.Kind {
 	case "Deployment":
@@ -89,29 +103,8 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// pod anti-affinity
-		podAntiAffinityPreferredWeightedPodAffinityTerm := corev1.WeightedPodAffinityTerm{
-			Weight: 1,
-			PodAffinityTerm: corev1.PodAffinityTerm{
-				TopologyKey:   "kubernetes.io/hostname",
-				LabelSelector: deploy.Spec.Selector,
-			},
-		}
-
+		selector = deploy.Spec.Selector
 		affinity = FillAffinity(deploy.Spec.Template.Spec)
-
-		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms =
-			append(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
-				nodeAffinityRequiredNodeSelectorTerms)
-
-		affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
-			append(affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-				nodeAffinityPreferred)
-
-		affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
-			append(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-				podAntiAffinityPreferredWeightedPodAffinityTerm)
-
 	case "StatefulSet":
 		// unmarshal the statefulset from the AdmissionRequest
 		sts := &appsv1.StatefulSet{}
@@ -125,34 +118,30 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// pod anti-affinity
-		podAntiAffinityPreferredWeightedPodAffinityTerm := corev1.WeightedPodAffinityTerm{
-			Weight: 1,
-			PodAffinityTerm: corev1.PodAffinityTerm{
-				TopologyKey:   "kubernetes.io/hostname",
-				LabelSelector: sts.Spec.Selector,
-			},
-		}
-
+		selector = sts.Spec.Selector
 		affinity = FillAffinity(sts.Spec.Template.Spec)
-
-		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms =
-			append(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
-				nodeAffinityRequiredNodeSelectorTerms)
-
-		affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
-			append(affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-				nodeAffinityPreferred)
-
-		affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
-			append(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-				podAntiAffinityPreferredWeightedPodAffinityTerm)
-
 	default:
 		klog.Errorf("unknown kind: %s", admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind)
 		jsonOk(w, r)
 		return
 	}
+
+	// pod anti-affinity
+	podAntiAffinityPreferredWeightedPodAffinityTerm := corev1.WeightedPodAffinityTerm{
+		Weight: 1,
+		PodAffinityTerm: corev1.PodAffinityTerm{
+			TopologyKey:   "kubernetes.io/hostname",
+			LabelSelector: selector,
+		},
+	}
+
+	affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
+		append(affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+			[]corev1.PreferredSchedulingTerm{app.SpotNodeAffinityPreferred, app.OndemandNodeAffinityPreferred}...)
+
+	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
+		append(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+			podAntiAffinityPreferredWeightedPodAffinityTerm)
 
 	// marshal the affinity back into the AdmissionReview
 	affinityBytes, err := json.Marshal(affinity)
@@ -208,9 +197,6 @@ func FillAffinity(podSpec corev1.PodSpec) *corev1.Affinity {
 	if podSpec.Affinity == nil {
 		affinity = &corev1.Affinity{
 			NodeAffinity: &corev1.NodeAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-					NodeSelectorTerms: []corev1.NodeSelectorTerm{},
-				},
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{},
 			},
 			PodAntiAffinity: &corev1.PodAntiAffinity{
@@ -223,21 +209,8 @@ func FillAffinity(podSpec corev1.PodSpec) *corev1.Affinity {
 
 	if affinity.NodeAffinity == nil {
 		affinity.NodeAffinity = &corev1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-				NodeSelectorTerms: []corev1.NodeSelectorTerm{},
-			},
 			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{},
 		}
-	}
-
-	if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{
-			NodeSelectorTerms: []corev1.NodeSelectorTerm{},
-		}
-	}
-
-	if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms == nil {
-		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = []corev1.NodeSelectorTerm{}
 	}
 
 	if affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
