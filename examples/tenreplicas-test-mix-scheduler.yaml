@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-scheduler
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: test-scheduler
+  template:
+    metadata:
+      labels:
+        app: test-scheduler
+    spec:
+      schedulerName: helen-mix-scheduler
+      containers:
+        - image: nginx:1.23-alpine
+          imagePullPolicy: IfNotPresent
+          name: nginx
+          ports:
+            - containerPort: 80
