@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: webhook-server
-  namespace: webhook-demo
+  namespace: mix-scheduler-system
   labels:
     app: webhook-server
 spec:
@@ -18,7 +18,7 @@ spec:
       containers:
       - name: server
         image: helenfrank/mix-scheduler-admission-webhook:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8443
           name: webhook-api
@@ -35,7 +35,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: webhook-server
-  namespace: webhook-demo
+  namespace: mix-scheduler-system
 spec:
   selector:
     app: webhook-server
@@ -48,17 +48,23 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: demo-webhook
 webhooks:
-  - name: webhook-server.webhook-demo.svc
+  - name: webhook-server.mix-scheduler-system.svc
     sideEffects: None
     admissionReviewVersions: ["v1", "v1beta1"]
     clientConfig:
       service:
         name: webhook-server
-        namespace: webhook-demo
+        namespace: mix-scheduler-system
         path: "/mutate"
       caBundle: ${CA_PEM_B64}
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "mix-scheduler-system"]
     rules:
-      - operations: [ "CREATE" ]
+      - operations: ["CREATE", "UPDATE"]
         apiGroups: ["apps"]
-        apiVersions: ["v1"]
+        apiVersions: ["*"]
         resources: ["deployments", "statefulsets"]
+        scope: "Namespaced"

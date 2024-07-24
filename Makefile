@@ -21,6 +21,9 @@ build:
 
 dockerBuild:
 	@docker build -t helenfrank/mix-scheduler-admission-webhook:${VERSION} .
+	@docker tag helenfrank/mix-scheduler-admission-webhook:${VERSION} helenfrank/mix-scheduler-admission-webhook:latest
+	@docker push helenfrank/mix-scheduler-admission-webhook:${VERSION}
+	@docker push helenfrank/mix-scheduler-admission-webhook:latest
 
 all:
 	@make depUpdate

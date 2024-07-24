@@ -27,13 +27,13 @@ keydir="$(mktemp -d)"
 echo "Generating TLS keys ..."
 "${basedir}/generate-keys.sh" "$keydir"
 
-# Create the `webhook-demo` namespace. This cannot be part of the YAML file as we first need to create the TLS secret,
+# Create the `mix-scheduler-system` namespace. This cannot be part of the YAML file as we first need to create the TLS secret,
 # which would fail otherwise.
 echo "Creating Kubernetes objects ..."
-kubectl create namespace webhook-demo
+kubectl create namespace mix-scheduler-system
 
 # Create the TLS secret for the generated keys.
-kubectl -n webhook-demo create secret tls webhook-server-tls \
+kubectl -n mix-scheduler-system create secret tls webhook-server-tls \
     --cert "${keydir}/webhook-server-tls.crt" \
     --key "${keydir}/webhook-server-tls.key"
 

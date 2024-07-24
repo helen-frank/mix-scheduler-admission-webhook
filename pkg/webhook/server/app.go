@@ -75,7 +75,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 
 	var affinity *corev1.Affinity
 
-	switch admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind {
+	switch admissionReview.Request.Kind.Kind {
 	case "Deployment":
 		// unmarshal the deployment from the AdmissionRequest
 		deploy := &appsv1.Deployment{}
@@ -98,7 +98,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		affinity = deploy.Spec.Template.Spec.Affinity
+		affinity := FillAffinity(deploy.Spec.Template.Spec)
 
 		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms =
 			append(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
@@ -134,7 +134,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		affinity = sts.Spec.Template.Spec.Affinity
+		affinity := FillAffinity(sts.Spec.Template.Spec)
 
 		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms =
 			append(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms,
@@ -174,11 +174,14 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	patchType := admissionv1.PatchTypeJSONPatch
+
 	// create the AdmissionResponse
 	admissionResponse := &admissionv1.AdmissionResponse{
-		UID:     admissionReview.Request.UID,
-		Allowed: true,
-		Patch:   patch,
+		UID:       admissionReview.Request.UID,
+		Allowed:   true,
+		Patch:     patch,
+		PatchType: &patchType,
 	}
 
 	respAdmissionReview := &admissionv1.AdmissionReview{
@@ -196,4 +199,58 @@ type JSONPatchEntry struct {
 	OP    string          `json:"op"`
 	Path  string          `json:"path"`
 	Value json.RawMessage `json:"value,omitempty"`
+}
+
+func FillAffinity(podSpec corev1.PodSpec) *corev1.Affinity {
+	affinity := &corev1.Affinity{}
+	if podSpec.Affinity == nil {
+		affinity = &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{},
+				},
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{},
+			},
+			PodAntiAffinity: &corev1.PodAntiAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{},
+			},
+		}
+	} else {
+		affinity = podSpec.Affinity
+	}
+
+	if affinity.NodeAffinity == nil {
+		affinity.NodeAffinity = &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{},
+			},
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{},
+		}
+	}
+
+	if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{},
+		}
+	}
+
+	if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms == nil {
+		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = []corev1.NodeSelectorTerm{}
+	}
+
+	if affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
+		affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.PreferredSchedulingTerm{}
+	}
+
+	if affinity.PodAntiAffinity == nil {
+		affinity.PodAntiAffinity = &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{},
+		}
+	}
+
+	if affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
+		affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.WeightedPodAffinityTerm{}
+	}
+
+	return affinity
 }

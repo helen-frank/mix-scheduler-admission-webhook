@@ -11,7 +11,6 @@ spec:
       labels:
         app: test-scheduler
     spec:
-      schedulerName: helen-mix-scheduler
       containers:
         - image: nginx:1.23-alpine
           imagePullPolicy: IfNotPresent

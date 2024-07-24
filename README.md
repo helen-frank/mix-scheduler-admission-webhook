@@ -77,7 +77,7 @@ To build the image, you need GNU make and Go, Docker.
 ## Deploy Webhook Server
 
 Start a Kubernetes cluster that meets the above prerequisites, and make sure it is active (I. e. through configuration in the default location, or by setting KUBECONFIG environment variables).
-Run./deploy.sh. This creates the CA, certificate, and private key for the webhook server and webhook-demo deploy the resources in the newly created namespace in the Kubernetes cluster.
+Run ./deploy.sh. This creates the CA, certificate, and private key for the webhook server and webhook-demo deploy the resources in the newly created namespace in the Kubernetes cluster.
 
 ## Verified
 

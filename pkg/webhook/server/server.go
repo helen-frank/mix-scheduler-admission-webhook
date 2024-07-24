@@ -37,7 +37,8 @@ func StartServer() error {
 	} else {
 		// default notControllerNamespace
 		notControllerNamespace = map[string]struct{}{
-			"kube-system": {},
+			"kube-system":          {},
+			"mix-scheduler-system": {},
 		}
 	}
 
