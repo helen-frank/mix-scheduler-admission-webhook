@@ -31,6 +31,7 @@ type App struct {
 	Client            kubernetes.Interface
 	Ctx               context.Context
 	OnDemandMinPodNum int
+	SpotMinPodNum     int
 
 	mixSchedulerRequierd   bool
 	notControllerNamespace map[string]struct{}
@@ -58,6 +59,7 @@ func NewDefaultApp(ctx context.Context) (*App, error) {
 		Client:                 client,
 		Ctx:                    ctx,
 		OnDemandMinPodNum:      1,
+		SpotMinPodNum:          1,
 		mixSchedulerRequierd:   true,
 		notControllerNamespace: map[string]struct{}{},
 
@@ -208,7 +210,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 
 		// preferentially scale pods on spot nodes
 		if admissionReview.Request.Operation == admissionv1.Delete && app.nodeCapacity(pod.Spec.NodeName) == ondemandKey {
-			if app.podExistAndReadyOnNodeCapacityNum(spotKey, pod) != 0 && app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) <= app.OnDemandMinPodNum {
+			if app.podExistAndReadyOnNodeCapacityNum(spotKey, pod) >= app.SpotMinPodNum && app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) < app.OnDemandMinPodNum {
 				app.HandleError(w, r, fmt.Errorf("preferentially scale pods on spot nodes"))
 				return
 			}

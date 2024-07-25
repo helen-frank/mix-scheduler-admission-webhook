@@ -53,12 +53,22 @@ func StartServer() error {
 
 	onDemandMinPodNum := 1
 
-	if val := os.Getenv("onDemandMinPodNum"); val != "" {
+	if val := os.Getenv("OnDemandMinPodNum"); val != "" {
 		num, err := strconv.Atoi(val)
 		if err != nil {
 			return err
 		}
 		onDemandMinPodNum = num
+	}
+
+	spotMinPodNum := 1
+
+	if val := os.Getenv("SpotMinPodNum"); val != "" {
+		num, err := strconv.Atoi(val)
+		if err != nil {
+			return err
+		}
+		spotMinPodNum = num
 	}
 
 	app, err := NewDefaultApp(context.Background())
@@ -69,8 +79,10 @@ func StartServer() error {
 	app.mixSchedulerRequierd = mixSchedulerRequierd
 	app.notControllerNamespace = notControllerNamespace
 	app.OnDemandMinPodNum = onDemandMinPodNum
+	app.SpotMinPodNum = spotMinPodNum
 
 	klog.Infof("OnDemandMinPodNum %v", app.OnDemandMinPodNum)
+	klog.Infof("SpotMinPodNum %v", app.SpotMinPodNum)
 
 	app.StartInformer()
 	defer app.StopInformer()
