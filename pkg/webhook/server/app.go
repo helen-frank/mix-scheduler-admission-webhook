@@ -210,7 +210,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 
 		// preferentially scale pods on spot nodes
 		if admissionReview.Request.Operation == admissionv1.Delete && app.nodeCapacity(pod.Spec.NodeName) == ondemandKey {
-			if app.podExistAndReadyOnNodeCapacityNum(spotKey, pod) >= app.SpotMinPodNum && app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) < app.OnDemandMinPodNum {
+			if app.podExistOnNodeCapacityNum(spotKey, pod) >= app.SpotMinPodNum && app.podExistOnNodeCapacityNum(ondemandKey, pod) < app.OnDemandMinPodNum {
 				app.HandleError(w, r, fmt.Errorf("preferentially scale pods on spot nodes"))
 				return
 			}
@@ -287,7 +287,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 	// pod anti-affinity
 	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.WeightedPodAffinityTerm{
 		corev1.WeightedPodAffinityTerm{
-			Weight: 1,
+			Weight: 100,
 			PodAffinityTerm: corev1.PodAffinityTerm{
 				TopologyKey:   "kubernetes.io/hostname",
 				LabelSelector: selector,
