@@ -5,8 +5,11 @@
 - Spot Instances are ideal for flexible or fault-tolerant applications
 - To ensure the high availability of the service, it is necessary to keep a certain amount of application pods on the on-demand node (non-spot node), and the pods on the spot node should be deployed as scattered as possible to avoid the short-term pressure surge caused by the offline of the single-point spot node, which excessively increases the pressure on other pods and reduces the availability of the service.
 - Try to ensure that most pods of the application are deployed on different spot nodes
-- Support custom selection of namespaces, whether the application accepts adjusted scheduling, by default, kube-system, mix-scheduler-system is not turned on, other namespaces are turned on, you can set the mix-scheduler-admission-webhook: false to turn off scheduling, the scheduling switch on the instance is better than the scheduling switch of the namespace, and the scheduling switch of the namespace is better than the scheduling switch of the mix-scheduler-admission-webhook.
-- On-demand and spot selection weights are adjustable. You can webhook the startup configuration and namespace label configuration (spot/weight: n, on-demand/weight: n). The weight configuration on the instance takes precedence over the weight configuration of the namespace, and the weight configuration of the namespace is better than the weight configuration of the mix-scheduler-admission-webhook.
+- Support custom selection of namespaces, whether the application accepts adjustment scheduling, by default, kube-system, mix-scheduler-system is not enabled, other namespaces are enabled, you can set the mix-scheduler-admission-webhook: "false" to turn off scheduling, the scheduling switch on the instance is better than the scheduling switch of the namespace, the scheduling switch of the namespace is better than the scheduling switch of the mix-scheduler-admission-webhook
+- Ensure that all the vast majority of pods (allreplicas-OnDemandMinPodNum) are scheduled to the spot node by statsfulset setting the node nodeslector for the deployment
+- When creating a pod, check that the number of pods on-demand is less than OnDemandMinPodNum, modify the nodeseleter of pods to schedule them to on-demond nodes, and make sure that the number of pods on-demand is greater than OnDemandMinPodNum, do not change
+- When deleting pods on-demand, check that the number of pods on spot is greater than or equal to SpotMinPodNum and the number of pods on-demand is less than or equal to OnDemandMinPodNum
+- SpotMinPodNum and OnDemandMinPodNum default values are 1
 
 ## Prerequisites
 
