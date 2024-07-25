@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -49,6 +51,16 @@ func StartServer() error {
 		}
 	}
 
+	onDemandMinPodNum := 1
+
+	if val := os.Getenv("onDemandMinPodNum"); val != "" {
+		num, err := strconv.Atoi(val)
+		if err != nil {
+			return err
+		}
+		onDemandMinPodNum = num
+	}
+
 	app, err := NewDefaultApp(context.Background())
 	if err != nil {
 		return err
@@ -56,22 +68,9 @@ func StartServer() error {
 
 	app.mixSchedulerRequierd = mixSchedulerRequierd
 	app.notControllerNamespace = notControllerNamespace
+	app.OnDemandMinPodNum = onDemandMinPodNum
 
-	if val := os.Getenv("SPOT_NODE_WEIGHT"); val != "" {
-		num, err := strconv.Atoi(val)
-		if err != nil {
-			return err
-		}
-		app.SpotNodeAffinityPreferred.Weight = int32(num)
-	}
-
-	if val := os.Getenv("ONDEMAND_NODE_WEIGHT"); val != "" {
-		num, err := strconv.Atoi(val)
-		if err != nil {
-			return err
-		}
-		app.OndemandNodeAffinityPreferred.Weight = int32(num)
-	}
+	klog.Infof("OnDemandMinPodNum %v", app.OnDemandMinPodNum)
 
 	app.StartInformer()
 	defer app.StopInformer()

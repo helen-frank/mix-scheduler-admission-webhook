@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -29,14 +28,15 @@ const (
 )
 
 type App struct {
-	Client kubernetes.Interface
-	Ctx    context.Context
+	Client            kubernetes.Interface
+	Ctx               context.Context
+	OnDemandMinPodNum int
 
 	mixSchedulerRequierd   bool
 	notControllerNamespace map[string]struct{}
 
-	SpotNodeAffinityPreferred     corev1.PreferredSchedulingTerm
-	OndemandNodeAffinityPreferred corev1.PreferredSchedulingTerm
+	ondemandNodeSelector map[string]string
+	spotNodeSelector     map[string]string
 
 	informermanager *informermanager.SingleClusterManager
 
@@ -57,36 +57,18 @@ func NewDefaultApp(ctx context.Context) (*App, error) {
 	return &App{
 		Client:                 client,
 		Ctx:                    ctx,
+		OnDemandMinPodNum:      1,
 		mixSchedulerRequierd:   true,
 		notControllerNamespace: map[string]struct{}{},
 
-		// spot node affinity
-		SpotNodeAffinityPreferred: corev1.PreferredSchedulingTerm{
-			Weight: 10,
-			Preference: corev1.NodeSelectorTerm{
-				MatchExpressions: []corev1.NodeSelectorRequirement{
-					{
-						Key:      capacityKey,
-						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{spotKey},
-					},
-				},
-			},
+		ondemandNodeSelector: map[string]string{
+			capacityKey: ondemandKey,
 		},
 
-		// on-demand node affinity
-		OndemandNodeAffinityPreferred: corev1.PreferredSchedulingTerm{
-			Weight: 1,
-			Preference: corev1.NodeSelectorTerm{
-				MatchExpressions: []corev1.NodeSelectorRequirement{
-					{
-						Key:      capacityKey,
-						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{ondemandKey},
-					},
-				},
-			},
+		spotNodeSelector: map[string]string{
+			capacityKey: spotKey,
 		},
+
 		informermanager: informermanager.NewSingleClusterManager(ctx, client),
 		stopCh:          make(chan struct{}),
 	}, nil
@@ -134,12 +116,9 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		affinity        *corev1.Affinity
-		selector        *metav1.LabelSelector
-		instanceLabels  map[string]string
-		namespaceLabels map[string]string
-		spotWeitht      = app.SpotNodeAffinityPreferred.Weight
-		ondemandWeitht  = app.OndemandNodeAffinityPreferred.Weight
+		affinity     *corev1.Affinity
+		selector     *metav1.LabelSelector
+		nodeSelector = map[string]string{}
 	)
 
 	switch admissionReview.Request.Kind.Kind {
@@ -169,9 +148,11 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		namespaceLabels = ns.Labels
-		instanceLabels = deploy.Labels
 		selector = deploy.Spec.Selector
+		if deploy.Spec.Template.Spec.NodeSelector != nil {
+			nodeSelector = deploy.Spec.Template.Spec.NodeSelector
+		}
+
 		affinity = FillAffinity(deploy.Spec.Template.Spec)
 	case "StatefulSet":
 		// unmarshal the statefulset from the AdmissionRequest
@@ -199,16 +180,24 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		namespaceLabels = ns.Labels
-		instanceLabels = sts.Labels
 		selector = sts.Spec.Selector
+		if sts.Spec.Template.Spec.NodeSelector != nil {
+			nodeSelector = sts.Spec.Template.Spec.NodeSelector
+		}
 		affinity = FillAffinity(sts.Spec.Template.Spec)
 	case "Pod":
 		// unmarshal the pod from the AdmissionRequest
 		pod := &corev1.Pod{}
-		if err := json.Unmarshal(admissionReview.Request.Object.Raw, pod); err != nil {
-			app.HandleError(w, r, fmt.Errorf("unmarshal to pod: %v", err))
-			return
+		if admissionReview.Request.Operation == admissionv1.Delete {
+			if err := json.Unmarshal(admissionReview.Request.OldObject.Raw, pod); err != nil {
+				app.HandleError(w, r, fmt.Errorf("unmarshal to pod: %v", err))
+				return
+			}
+		} else {
+			if err := json.Unmarshal(admissionReview.Request.Object.Raw, pod); err != nil {
+				app.HandleError(w, r, fmt.Errorf("unmarshal to pod: %v", err))
+				return
+			}
 		}
 
 		if app.instanceIsSkip(pod.Namespace, pod.Labels) {
@@ -217,12 +206,9 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		klog.Infof("pod name is %s, operation is %s", pod.Name, admissionReview.Request.Operation)
-
 		// preferentially scale pods on spot nodes
-		if admissionReview.Request.Operation == admissionv1.Delete &&
-			app.nodeCapacity(pod.Spec.NodeName) == ondemandKey {
-			if app.podExistAndReadyOnNodeCapacityNum(spotKey, pod) != 0 && app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) == 1 {
+		if admissionReview.Request.Operation == admissionv1.Delete && app.nodeCapacity(pod.Spec.NodeName) == ondemandKey {
+			if app.podExistAndReadyOnNodeCapacityNum(spotKey, pod) != 0 && app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) <= app.OnDemandMinPodNum {
 				app.HandleError(w, r, fmt.Errorf("preferentially scale pods on spot nodes"))
 				return
 			}
@@ -234,33 +220,20 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if admissionReview.Request.Operation == admissionv1.Create {
-			if app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) > 0 {
+			if app.podExistOnNodeCapacityNum(ondemandKey, pod) >= app.OnDemandMinPodNum {
 				writeNil(w, admissionReview)
 				return
 			}
 
 			klog.Info("preferentially scale pods on ondemand nodes")
 
-			// 优先为ondemand节点分配pod
-			affinity = &corev1.Affinity{
-				NodeAffinity: &corev1.NodeAffinity{
-					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-						NodeSelectorTerms: []corev1.NodeSelectorTerm{
-							{
-								MatchExpressions: []corev1.NodeSelectorRequirement{
-									{
-										Key:      capacityKey,
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{ondemandKey},
-									},
-								},
-							},
-						},
-					},
-				},
+			// 优先将ondemand节点分配pod
+			nodeSelector = map[string]string{
+				capacityKey: ondemandKey,
 			}
-			// marshal the affinity back into the AdmissionReview
-			affinityBytes, err := json.Marshal(affinity)
+
+			// marshal the nodeSelector
+			nodeSelectorBytes, err := json.Marshal(nodeSelector)
 			if err != nil {
 				app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
 				return
@@ -269,8 +242,8 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			patch := []JSONPatchEntry{
 				{
 					OP:    "replace",
-					Path:  "/spec/affinity",
-					Value: affinityBytes,
+					Path:  "/spec/nodeSelector",
+					Value: nodeSelectorBytes,
 				},
 			}
 
@@ -300,6 +273,8 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			jsonOk(w, &respAdmissionReview)
 			return
 		}
+		writeNil(w, admissionReview)
+		return
 
 	default:
 		klog.Errorf("unknown kind: %s", admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind)
@@ -307,95 +282,29 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	instanceIsSet := false
-	if val, ok := instanceLabels[spotWeithtKey]; ok {
-		sw, err := strconv.Atoi(val)
-		if err != nil {
-			app.HandleError(w, r, fmt.Errorf("parse spot weight: %v", err))
-			return
-		}
-
-		if sw < 0 { // spot weight must >= 0
-			app.HandleError(w, r, fmt.Errorf("spot weight must >= 0"))
-			return
-		}
-
-		instanceIsSet = true
-		spotWeitht = int32(sw)
-	}
-
-	if val, ok := instanceLabels[ondemandWeithtKey]; ok {
-		ow, err := strconv.Atoi(val)
-		if err != nil {
-			app.HandleError(w, r, fmt.Errorf("parse on-demand weight: %v", err))
-			return
-		}
-
-		if ow < 0 { // on-demand weight must >= 0
-			app.HandleError(w, r, fmt.Errorf("on-demand weight must >= 0"))
-			return
-		}
-
-		instanceIsSet = true
-		ondemandWeitht = int32(ow)
-	}
-
-	if !instanceIsSet {
-		if val, ok := namespaceLabels[spotWeithtKey]; ok {
-			sw, err := strconv.Atoi(val)
-			if err != nil {
-				app.HandleError(w, r, fmt.Errorf("parse spot weight: %v", err))
-				return
-			}
-
-			if sw < 0 { // spot weight must >= 0
-				app.HandleError(w, r, fmt.Errorf("spot weight must >= 0"))
-				return
-			}
-
-			spotWeitht = int32(sw)
-		}
-
-		if val, ok := namespaceLabels[ondemandWeithtKey]; ok {
-			ow, err := strconv.Atoi(val)
-			if err != nil {
-				app.HandleError(w, r, fmt.Errorf("parse on-demand weight: %v", err))
-				return
-			}
-
-			if ow < 0 { // on-demand weight must >= 0
-				app.HandleError(w, r, fmt.Errorf("on-demand weight must >= 0"))
-				return
-			}
-
-			ondemandWeitht = int32(ow)
-		}
-	}
-
 	// pod anti-affinity
-	podAntiAffinityPreferredWeightedPodAffinityTerm := corev1.WeightedPodAffinityTerm{
-		Weight: 1,
-		PodAffinityTerm: corev1.PodAffinityTerm{
-			TopologyKey:   "kubernetes.io/hostname",
-			LabelSelector: selector,
+	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.WeightedPodAffinityTerm{
+		corev1.WeightedPodAffinityTerm{
+			Weight: 1,
+			PodAffinityTerm: corev1.PodAffinityTerm{
+				TopologyKey:   "kubernetes.io/hostname",
+				LabelSelector: selector,
+			},
 		},
 	}
 
-	spotNodeAffinityPreferred := app.SpotNodeAffinityPreferred
-	spotNodeAffinityPreferred.Weight = spotWeitht
-	ondemandNodeAffinityPreferred := app.OndemandNodeAffinityPreferred
-	ondemandNodeAffinityPreferred.Weight = ondemandWeitht
-
-	affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
-		append(affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-			[]corev1.PreferredSchedulingTerm{spotNodeAffinityPreferred, ondemandNodeAffinityPreferred}...)
-
-	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution =
-		append(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
-			podAntiAffinityPreferredWeightedPodAffinityTerm)
-
 	// marshal the affinity back into the AdmissionReview
 	affinityBytes, err := json.Marshal(affinity)
+	if err != nil {
+		app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
+		return
+	}
+
+	// pod node selector
+	nodeSelector[capacityKey] = app.spotNodeSelector[capacityKey]
+
+	// marshal the nodeSelector
+	nodeSelectorBytes, err := json.Marshal(nodeSelector)
 	if err != nil {
 		app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
 		return
@@ -407,6 +316,11 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			OP:    "replace",
 			Path:  "/spec/template/spec/affinity",
 			Value: affinityBytes,
+		},
+		{
+			OP:    "replace",
+			Path:  "/spec/template/spec/nodeSelector",
+			Value: nodeSelectorBytes,
 		},
 	}
 
@@ -444,38 +358,15 @@ type JSONPatchEntry struct {
 }
 
 func FillAffinity(podSpec corev1.PodSpec) *corev1.Affinity {
-	affinity := &corev1.Affinity{}
+	var affinity *corev1.Affinity
 	if podSpec.Affinity == nil {
 		affinity = &corev1.Affinity{
-			NodeAffinity: &corev1.NodeAffinity{
-				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{},
-			},
 			PodAntiAffinity: &corev1.PodAntiAffinity{
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{},
 			},
 		}
 	} else {
 		affinity = podSpec.Affinity
-	}
-
-	if affinity.NodeAffinity == nil {
-		affinity.NodeAffinity = &corev1.NodeAffinity{
-			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{},
-		}
-	}
-
-	if affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
-		affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.PreferredSchedulingTerm{}
-	}
-
-	if affinity.PodAntiAffinity == nil {
-		affinity.PodAntiAffinity = &corev1.PodAntiAffinity{
-			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{},
-		}
-	}
-
-	if affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution == nil {
-		affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.WeightedPodAffinityTerm{}
 	}
 
 	return affinity

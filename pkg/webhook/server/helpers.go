@@ -150,7 +150,6 @@ func (app *App) podExistAndReadyOnNodeCapacityNum(capacity string, pod *corev1.P
 	}
 
 	num := 0
-
 	for pi := range pods {
 		if _, ok := capacityNodes[pods[pi].Spec.NodeName]; ok && PodReady(pods[pi]) {
 			num++
@@ -160,7 +159,25 @@ func (app *App) podExistAndReadyOnNodeCapacityNum(capacity string, pod *corev1.P
 	return num
 }
 
+func (app *App) podExistOnNodeCapacityNum(capacity string, pod *corev1.Pod) int {
+	pods, err := app.ListPod(pod.Namespace, labels.Set(pod.Labels).AsSelector())
+	if err != nil {
+		klog.Errorf("get pod: %v", err)
+		return 0
+	}
+
+	num := 0
+	for pi := range pods {
+		if pods[pi].Spec.NodeSelector[capacityKey] == capacity {
+			num++
+		}
+	}
+
+	return num
+}
+
 func (app *App) nodeCapacity(nodeName string) string {
+	klog.Infof("nodeCapacity, nodeName: %s", nodeName)
 	node, err := app.GetNode(nodeName, metav1.GetOptions{})
 	if err != nil {
 		klog.Errorf("get node: %v", err)
