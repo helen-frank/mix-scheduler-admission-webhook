@@ -14,13 +14,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	"github.com/helen-frank/mix-scheduler-admission-webhook/pkg/informermanager"
 )
 
 const (
-	capacityKey = "node.kubernetes.io/capacity"
-	ondemand    = "on-demand"
-	spot        = "spot"
-
+	capacityKey       = "node.kubernetes.io/capacity"
+	ondemandKey       = "on-demand"
+	spotKey           = "spot"
 	spotWeithtKey     = "spot/weight"
 	ondemandWeithtKey = "on-demand/weight"
 
@@ -36,6 +37,10 @@ type App struct {
 
 	SpotNodeAffinityPreferred     corev1.PreferredSchedulingTerm
 	OndemandNodeAffinityPreferred corev1.PreferredSchedulingTerm
+
+	informermanager *informermanager.SingleClusterManager
+
+	stopCh chan struct{}
 }
 
 func NewDefaultApp(ctx context.Context) (*App, error) {
@@ -63,7 +68,7 @@ func NewDefaultApp(ctx context.Context) (*App, error) {
 					{
 						Key:      capacityKey,
 						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{spot},
+						Values:   []string{spotKey},
 					},
 				},
 			},
@@ -77,12 +82,22 @@ func NewDefaultApp(ctx context.Context) (*App, error) {
 					{
 						Key:      capacityKey,
 						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{ondemand},
+						Values:   []string{ondemandKey},
 					},
 				},
 			},
 		},
+		informermanager: informermanager.NewSingleClusterManager(ctx, client),
+		stopCh:          make(chan struct{}),
 	}, nil
+}
+
+func (app *App) StartInformer() {
+	go app.informermanager.StartInformer(app.stopCh)
+}
+
+func (app *App) StopInformer() {
+	close(app.stopCh)
 }
 
 // isControllerNamespace is controller namespace
@@ -142,7 +157,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		ns, err := app.Client.CoreV1().Namespaces().Get(app.Ctx, deploy.Namespace, metav1.GetOptions{})
+		ns, err := app.GetNamespace(deploy.Namespace, metav1.GetOptions{})
 		if err != nil {
 			app.HandleError(w, r, fmt.Errorf("get namespace: %v", err))
 			return
@@ -172,7 +187,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		ns, err := app.Client.CoreV1().Namespaces().Get(app.Ctx, sts.Namespace, metav1.GetOptions{})
+		ns, err := app.GetNamespace(sts.Namespace, metav1.GetOptions{})
 		if err != nil {
 			app.HandleError(w, r, fmt.Errorf("get namespace: %v", err))
 			return
@@ -188,6 +203,104 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		instanceLabels = sts.Labels
 		selector = sts.Spec.Selector
 		affinity = FillAffinity(sts.Spec.Template.Spec)
+	case "Pod":
+		// unmarshal the pod from the AdmissionRequest
+		pod := &corev1.Pod{}
+		if err := json.Unmarshal(admissionReview.Request.Object.Raw, pod); err != nil {
+			app.HandleError(w, r, fmt.Errorf("unmarshal to pod: %v", err))
+			return
+		}
+
+		if app.instanceIsSkip(pod.Namespace, pod.Labels) {
+			klog.Info("instance is skip")
+			writeNil(w, admissionReview)
+			return
+		}
+
+		klog.Infof("pod name is %s, operation is %s", pod.Name, admissionReview.Request.Operation)
+
+		// preferentially scale pods on spot nodes
+		if admissionReview.Request.Operation == admissionv1.Delete &&
+			app.nodeCapacity(pod.Spec.NodeName) == ondemandKey {
+			if app.podExistAndReadyOnNodeCapacityNum(spotKey, pod) != 0 && app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) == 1 {
+				app.HandleError(w, r, fmt.Errorf("preferentially scale pods on spot nodes"))
+				return
+			}
+
+			klog.Info("preferentially scale pods on spot nodes")
+
+			writeNil(w, admissionReview)
+			return
+		}
+
+		if admissionReview.Request.Operation == admissionv1.Create {
+			if app.podExistAndReadyOnNodeCapacityNum(ondemandKey, pod) > 0 {
+				writeNil(w, admissionReview)
+				return
+			}
+
+			klog.Info("preferentially scale pods on ondemand nodes")
+
+			// 优先为ondemand节点分配pod
+			affinity = &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      capacityKey,
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{ondemandKey},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			// marshal the affinity back into the AdmissionReview
+			affinityBytes, err := json.Marshal(affinity)
+			if err != nil {
+				app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
+				return
+			}
+			// create the patch
+			patch := []JSONPatchEntry{
+				{
+					OP:    "replace",
+					Path:  "/spec/affinity",
+					Value: affinityBytes,
+				},
+			}
+
+			patchBytes, err := json.Marshal(&patch)
+			if err != nil {
+				app.HandleError(w, r, fmt.Errorf("marshal patch: %v", err))
+				return
+			}
+
+			patchType := admissionv1.PatchTypeJSONPatch
+			// create the AdmissionResponse
+			admissionResponse := &admissionv1.AdmissionResponse{
+				UID:       admissionReview.Request.UID,
+				Allowed:   true,
+				Patch:     patchBytes,
+				PatchType: &patchType,
+			}
+
+			respAdmissionReview := &admissionv1.AdmissionReview{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "AdmissionReview",
+					APIVersion: "admission.k8s.io/v1",
+				},
+				Response: admissionResponse,
+			}
+
+			jsonOk(w, &respAdmissionReview)
+			return
+		}
+
 	default:
 		klog.Errorf("unknown kind: %s", admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind)
 		writeNil(w, admissionReview)

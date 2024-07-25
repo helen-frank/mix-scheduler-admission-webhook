@@ -15,8 +15,11 @@ metadata:
   name: mix-scheduler-admission-webhook-reader
 rules:
 - apiGroups: [""]
-  resources: ["namespaces"]
+  resources: ["namespaces", "nodes"]
   verbs: ["get", "watch", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list", "update", "patch"]
 
 ---
 
@@ -107,4 +110,9 @@ webhooks:
         apiGroups: ["apps"]
         apiVersions: ["*"]
         resources: ["deployments", "statefulsets"]
+        scope: "Namespaced"
+      - operations: ["CREATE", "DELETE"]
+        apiGroups: [""]
+        apiVersions: ["*"]
+        resources: ["pods"]
         scope: "Namespaced"

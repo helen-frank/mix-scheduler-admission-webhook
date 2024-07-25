@@ -73,6 +73,9 @@ func StartServer() error {
 		app.OndemandNodeAffinityPreferred.Weight = int32(num)
 	}
 
+	app.StartInformer()
+	defer app.StopInformer()
+
 	mux := BuildRouter(app)
 
 	fmt.Printf("Listening on port %s\n", port)
@@ -85,5 +88,6 @@ func StartServer() error {
 		Addr:    ":" + port,
 		Handler: mux,
 	}
+
 	return server.ListenAndServeTLS(certPath, keyPath)
 }
