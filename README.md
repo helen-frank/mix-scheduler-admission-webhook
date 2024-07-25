@@ -85,14 +85,14 @@ To build the image, you need GNU make and Go, Docker.
 ## Deploy Webhook Server
 
 Start a Kubernetes cluster that meets the above prerequisites, and make sure it is active (I. e. through configuration in the default location, or by setting KUBECONFIG environment variables).
-Run ./deploy.sh. This creates the CA, certificate, and private key for the webhook server and webhook-demo deploy the resources in the newly created namespace in the Kubernetes cluster.
+Run ./deploy.sh. This creates the CA, certificate, and private key for the webhook server and mix-scheduler-system deploy the resources in the newly created namespace in the Kubernetes cluster.
 
 ## Verified
 
-1.The pods in the webhook-server namespace should webhook-demo be running:
+1.The pods in the webhook-server namespace should mix-scheduler-system be running:
 
 ```bash
-$ kubectl -n webhook-demo get pods
+$ kubectl -n mix-scheduler-system get pods
 NAME                             READY     STATUS    RESTARTS   AGE
 webhook-server-6f976f7bf-hssc9   1/1       Running   0          35m
 ```

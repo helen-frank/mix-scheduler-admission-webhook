@@ -85,14 +85,14 @@ kubectl api-versions | grep admissionregistration.k8s.io/v1
 ## 部署 Webhook 服务器
 
 启动一个满足上述先决条件的 Kubernetes 集群，并确保它处于活动状态（即通过默认位置的配置，或通过设置KUBECONFIG环境变量）。
-运行./deploy.sh。这将为 webhook 服务器创建 CA、证书和私钥，并webhook-demo在 Kubernetes 集群中新创建的命名空间中部署资源。
+运行./deploy.sh。这将为 webhook 服务器创建 CA、证书和私钥，并mix-scheduler-system在 Kubernetes 集群中新创建的命名空间中部署资源。
 
 ## 核实
 
-1.webhook-server命名空间中的 pod应该webhook-demo正在运行：
+1.webhook-server命名空间中的 pod应该mix-scheduler-system正在运行：
 
 ```bash
-$ kubectl -n webhook-demo get pods
+$ kubectl -n mix-scheduler-system get pods
 NAME                             READY     STATUS    RESTARTS   AGE
 webhook-server-6f976f7bf-hssc9   1/1       Running   0          35m
 ```
