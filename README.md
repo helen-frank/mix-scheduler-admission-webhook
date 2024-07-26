@@ -11,6 +11,11 @@
 - When deleting pods on-demand, check that the number of pods on spot is greater than or equal to SpotMinPodNum and the number of pods on-demand is less than or equal to OnDemandMinPodNum
 - SpotMinPodNum and OnDemandMinPodNum default values are 1
 
+> Unrealized part
+- Only access pod creation, update, delete requests, modify nodeselector and PodAntiAffinity in the pod. PreferredDuringSchedulingIgnoredDuringExecution
+
+- Control zoom logic using annotation deletionCost, reference https://github.com/kubernetes/kubernetes/issues/123541
+
 ## Prerequisites
 
 The cluster to test this example must be running Kubernetes 1.16.0 or later

@@ -11,6 +11,11 @@
 - 删除on-demand上的pod时, 检查spot上的pod数量大于等于 SpotMinPodNum 且 on-demand上的pod数量小于OnDemandMinPodNum
 - SpotMinPodNum和OnDemandMinPodNum 默认值均为1
 
+> 未实现部分
+- 仅仅接入pod 创建,更新,删除请求, 在pod里修改nodeselector与PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+
+- 使用annotation deletionCost控制缩放逻辑, 参考 https://github.com/kubernetes/kubernetes/issues/123541
+
 ## 先决条件
 
 测试此示例的集群必须运行 Kubernetes 1.16.0 或更高版本
