@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	admissionv1 "k8s.io/api/admission/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -117,77 +116,7 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var (
-		affinity     *corev1.Affinity
-		selector     *metav1.LabelSelector
-		nodeSelector = map[string]string{}
-	)
-
-	switch admissionReview.Request.Kind.Kind {
-	case "Deployment":
-		// unmarshal the deployment from the AdmissionRequest
-		deploy := &appsv1.Deployment{}
-		if err := json.Unmarshal(admissionReview.Request.Object.Raw, deploy); err != nil {
-			app.HandleError(w, r, fmt.Errorf("unmarshal to deploy: %v", err))
-			return
-		}
-
-		if app.instanceIsSkip(deploy.Namespace, deploy.Labels) {
-			klog.Info("instance is skip")
-			writeNil(w, admissionReview)
-			return
-		}
-
-		ns, err := app.GetNamespace(deploy.Namespace, metav1.GetOptions{})
-		if err != nil {
-			app.HandleError(w, r, fmt.Errorf("get namespace: %v", err))
-			return
-		}
-
-		if val, ok := ns.Labels[mixSchedulerKey]; ok && val != "" && val != "true" {
-			klog.Info("instance is skip")
-			writeNil(w, admissionReview)
-			return
-		}
-
-		selector = deploy.Spec.Selector
-		if deploy.Spec.Template.Spec.NodeSelector != nil {
-			nodeSelector = deploy.Spec.Template.Spec.NodeSelector
-		}
-
-		affinity = FillAffinity(deploy.Spec.Template.Spec)
-	case "StatefulSet":
-		// unmarshal the statefulset from the AdmissionRequest
-		sts := &appsv1.StatefulSet{}
-		if err := json.Unmarshal(admissionReview.Request.Object.Raw, sts); err != nil {
-			app.HandleError(w, r, fmt.Errorf("unmarshal to statefulset: %v", err))
-			return
-		}
-
-		if app.instanceIsSkip(sts.Namespace, sts.Labels) {
-			klog.Info("instance is skip")
-			writeNil(w, admissionReview)
-			return
-		}
-
-		ns, err := app.GetNamespace(sts.Namespace, metav1.GetOptions{})
-		if err != nil {
-			app.HandleError(w, r, fmt.Errorf("get namespace: %v", err))
-			return
-		}
-
-		if val, ok := ns.Labels[mixSchedulerKey]; ok && val != "" && val != "true" {
-			klog.Info("instance is skip")
-			writeNil(w, admissionReview)
-			return
-		}
-
-		selector = sts.Spec.Selector
-		if sts.Spec.Template.Spec.NodeSelector != nil {
-			nodeSelector = sts.Spec.Template.Spec.NodeSelector
-		}
-		affinity = FillAffinity(sts.Spec.Template.Spec)
-	case "Pod":
+	if admissionReview.Request.Kind.Kind == "Pod" {
 		// unmarshal the pod from the AdmissionRequest
 		pod := &corev1.Pod{}
 		if admissionReview.Request.Operation == admissionv1.Delete {
@@ -222,135 +151,25 @@ func (app *App) HandleMutate(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if admissionReview.Request.Operation == admissionv1.Create {
-			if app.podExistOnNodeCapacityNum(ondemandKey, pod) >= app.OnDemandMinPodNum {
+			respAdmissionReview, err := podCreateOperation(app, admissionReview, pod)
+			if err != nil {
+				app.HandleError(w, r, err)
+				return
+			} else if respAdmissionReview == nil {
 				writeNil(w, admissionReview)
 				return
-			}
-
-			klog.Info("preferentially scale pods on ondemand nodes")
-
-			// 优先将ondemand节点分配pod
-			nodeSelector = map[string]string{
-				capacityKey: ondemandKey,
-			}
-
-			// marshal the nodeSelector
-			nodeSelectorBytes, err := json.Marshal(nodeSelector)
-			if err != nil {
-				app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
-				return
-			}
-			// create the patch
-			patch := []JSONPatchEntry{
-				{
-					OP:    "replace",
-					Path:  "/spec/nodeSelector",
-					Value: nodeSelectorBytes,
-				},
-			}
-
-			patchBytes, err := json.Marshal(&patch)
-			if err != nil {
-				app.HandleError(w, r, fmt.Errorf("marshal patch: %v", err))
-				return
-			}
-
-			patchType := admissionv1.PatchTypeJSONPatch
-			// create the AdmissionResponse
-			admissionResponse := &admissionv1.AdmissionResponse{
-				UID:       admissionReview.Request.UID,
-				Allowed:   true,
-				Patch:     patchBytes,
-				PatchType: &patchType,
-			}
-
-			respAdmissionReview := &admissionv1.AdmissionReview{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "AdmissionReview",
-					APIVersion: "admission.k8s.io/v1",
-				},
-				Response: admissionResponse,
 			}
 
 			jsonOk(w, &respAdmissionReview)
 			return
 		}
-		writeNil(w, admissionReview)
-		return
 
-	default:
-		klog.Errorf("unknown kind: %s", admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind)
 		writeNil(w, admissionReview)
 		return
 	}
 
-	// pod anti-affinity
-	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.WeightedPodAffinityTerm{
-		corev1.WeightedPodAffinityTerm{
-			Weight: 100,
-			PodAffinityTerm: corev1.PodAffinityTerm{
-				TopologyKey:   "kubernetes.io/hostname",
-				LabelSelector: selector,
-			},
-		},
-	}
-
-	// marshal the affinity back into the AdmissionReview
-	affinityBytes, err := json.Marshal(affinity)
-	if err != nil {
-		app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
-		return
-	}
-
-	// pod node selector
-	nodeSelector[capacityKey] = app.spotNodeSelector[capacityKey]
-
-	// marshal the nodeSelector
-	nodeSelectorBytes, err := json.Marshal(nodeSelector)
-	if err != nil {
-		app.HandleError(w, r, fmt.Errorf("marshal affinity: %v", err))
-		return
-	}
-
-	// create the patch
-	patch := []JSONPatchEntry{
-		{
-			OP:    "replace",
-			Path:  "/spec/template/spec/affinity",
-			Value: affinityBytes,
-		},
-		{
-			OP:    "replace",
-			Path:  "/spec/template/spec/nodeSelector",
-			Value: nodeSelectorBytes,
-		},
-	}
-
-	patchBytes, err := json.Marshal(&patch)
-	if err != nil {
-		app.HandleError(w, r, fmt.Errorf("marshal patch: %v", err))
-		return
-	}
-
-	patchType := admissionv1.PatchTypeJSONPatch
-
-	// create the AdmissionResponse
-	admissionResponse := &admissionv1.AdmissionResponse{
-		UID:       admissionReview.Request.UID,
-		Allowed:   true,
-		Patch:     patchBytes,
-		PatchType: &patchType,
-	}
-
-	respAdmissionReview := &admissionv1.AdmissionReview{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "AdmissionReview",
-			APIVersion: "admission.k8s.io/v1",
-		},
-		Response: admissionResponse,
-	}
-
-	jsonOk(w, &respAdmissionReview)
+	klog.Errorf("unknown kind: %s", admissionReview.Request.Object.Object.GetObjectKind().GroupVersionKind().Kind)
+	writeNil(w, admissionReview)
 }
 
 type JSONPatchEntry struct {
@@ -372,4 +191,80 @@ func FillAffinity(podSpec corev1.PodSpec) *corev1.Affinity {
 	}
 
 	return affinity
+}
+
+func podCreateOperation(app *App, admissionReview *admissionv1.AdmissionReview, pod *corev1.Pod) (*admissionv1.AdmissionReview, error) {
+	if app.podExistOnNodeCapacityNum(ondemandKey, pod) >= app.OnDemandMinPodNum {
+		return nil, nil
+	}
+
+	klog.Info("preferentially scale pods on ondemand nodes")
+
+	nodeSelector := map[string]string{
+		capacityKey: ondemandKey,
+	}
+
+	// marshal the nodeSelector
+	nodeSelectorBytes, err := json.Marshal(nodeSelector)
+	if err != nil {
+		return nil, fmt.Errorf("marshal affinity: %v", err)
+	}
+
+	// pod anti-affinity
+	affinity := FillAffinity(pod.Spec)
+
+	affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = []corev1.WeightedPodAffinityTerm{
+		corev1.WeightedPodAffinityTerm{
+			Weight: 100,
+			PodAffinityTerm: corev1.PodAffinityTerm{
+				TopologyKey:   "kubernetes.io/hostname",
+				LabelSelector: &metav1.LabelSelector{MatchLabels: pod.Labels},
+			},
+		},
+	}
+
+	// marshal the affinity back into the AdmissionReview
+	affinityBytes, err := json.Marshal(affinity)
+	if err != nil {
+		return nil, fmt.Errorf("marshal affinity: %v", err)
+	}
+
+	// create the patch
+	patch := []JSONPatchEntry{
+		{
+			OP:    "replace",
+			Path:  "/spec/nodeSelector",
+			Value: nodeSelectorBytes,
+		},
+
+		{
+			OP:    "replace",
+			Path:  "/spec/affinity",
+			Value: affinityBytes,
+		},
+	}
+
+	patchBytes, err := json.Marshal(&patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshal patch: %v", err)
+	}
+
+	patchType := admissionv1.PatchTypeJSONPatch
+	// create the AdmissionResponse
+	admissionResponse := &admissionv1.AdmissionResponse{
+		UID:       admissionReview.Request.UID,
+		Allowed:   true,
+		Patch:     patchBytes,
+		PatchType: &patchType,
+	}
+
+	respAdmissionReview := &admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "AdmissionReview",
+			APIVersion: "admission.k8s.io/v1",
+		},
+		Response: admissionResponse,
+	}
+
+	return respAdmissionReview, nil
 }

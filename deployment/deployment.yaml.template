@@ -106,11 +106,6 @@ webhooks:
           operator: NotIn
           values: ["kube-system", "mix-scheduler-system"]
     rules:
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: ["apps"]
-        apiVersions: ["*"]
-        resources: ["deployments", "statefulsets"]
-        scope: "Namespaced"
       - operations: ["CREATE", "DELETE"]
         apiGroups: [""]
         apiVersions: ["*"]
